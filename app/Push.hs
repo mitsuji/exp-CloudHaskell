@@ -1,25 +1,37 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 import Network.Transport.InMemory (createTransport)
 import Control.Distributed.Process
 import Control.Distributed.Process.Node
 import Text.Read (readMaybe)
+import GHC.Generics (Generic)
+import Data.Typeable (Typeable)
+import Data.Binary (Binary)
 
 type State = Int
 
-processString :: State -> (ProcessId, String) -> Process State
-processString count (sender,msg) = do
+data Push = StringData ProcessId String
+          | IntData ProcessId Int
+          deriving (Generic,Typeable)
+
+instance Binary Push
+
+
+processPush :: State -> Push -> Process State
+processPush count (StringData sender msg) = do
   send sender $ "*" ++ msg ++ "*"
   liftIO $ do
     putStrLn $ "string: " ++ msg
     putStrLn $ "count: " ++ show count
   return $ count+1
-
-processInt :: State -> (ProcessId, Int) -> Process State
-processInt count (sender,n) = do
+processPush count (IntData sender n) = do
   send sender $ n * 2 + 1
   liftIO $ do
     putStrLn $ "int: " ++ show n
     putStrLn $ "count: " ++ show count
   return $ count+1
+
 
 main :: IO ()
 main = do
@@ -29,7 +41,7 @@ main = do
   clientLoop node spid
   where
     serverLoop state = do
-      state' <- receiveWait [match (processString state), match (processInt state)]
+      state' <- receiveWait [match (processPush state)]
       serverLoop state'
       
     clientLoop node tpid = do
@@ -43,17 +55,17 @@ main = do
       
     
 sendString tpid self xs = do
-    send tpid (self,xs)
-    msb <- expectTimeout 1000000 :: Process (Maybe String)
-    case msb of
-      Just sb -> liftIO $ putStrLn $ "result: " ++ sb
-      Nothing -> return ()
+    send tpid (StringData self xs)
+--    msb <- expectTimeout 1000000 :: Process (Maybe String)
+--    case msb of
+--      Just sb -> liftIO $ putStrLn $ "result: " ++ sb
+--      Nothing -> return ()
 
 
 sendInt tpid self num = do
-    send tpid (self,num)
-    msb <- expectTimeout 1000000 :: Process (Maybe Int)
-    case msb of
-      Just sb -> liftIO $ putStrLn $ "result: " ++ show sb
-      Nothing -> return ()
+    send tpid (IntData self num)
+--    msb <- expectTimeout 1000000 :: Process (Maybe Int)
+--    case msb of
+--      Just sb -> liftIO $ putStrLn $ "result: " ++ show sb
+--      Nothing -> return ()
   
