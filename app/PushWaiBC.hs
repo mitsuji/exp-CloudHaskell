@@ -48,7 +48,9 @@ main = do
     ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp' node spid) (httpRouterApp' node spid)
 
 
-type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> ReaderT LocalNode IO Wai.ResponseReceived
+type IO' = ReaderT LocalNode IO
+
+type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
 
 httpRouterApp' :: LocalNode -> ProcessId -> Wai.Application  
 httpRouterApp' node pid req respond = runReaderT (httpRouterApp pid req respond) node
@@ -76,9 +78,8 @@ pushApp spid req respond = do
 
 sendString :: ProcessId -> String  -> Application'
 sendString spid xs req respond = do
-  node <- ask
+  msb <- pushString spid xs
   lift $ do
-    msb <- pushString node spid xs
     case msb of
       Just sb -> do
         let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ xs ++ " -> " ++ sb
@@ -89,9 +90,8 @@ sendString spid xs req respond = do
 
 sendInt :: ProcessId -> Int -> Application'
 sendInt spid n req respond = do
-  node <- ask
+  msb <- pushInt spid n
   lift $ do
-    msb <- pushInt node spid n
     case msb of
       Just sb -> do
         let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ (show n) ++ " -> " ++ (show sb)
@@ -109,7 +109,7 @@ staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
     indices = fromJust $ toPieces ["main.html"] -- default content
 
 
-type WSServerApp' = WS.PendingConnection -> ReaderT LocalNode IO ()
+type WSServerApp' = WS.PendingConnection -> IO' ()
 
 wsRouterApp' :: LocalNode -> ProcessId -> WS.ServerApp
 wsRouterApp' node pid pconn = runReaderT (wsRouterApp pid pconn) node
@@ -128,16 +128,16 @@ viewerApp spid pconn = do
   node <- ask
   conn <- lift $ WS.acceptRequest pconn
   vpid <- lift $ forkProcess node $ viewerServer conn
-  lift $ registViewer node spid vpid
+  registViewer spid vpid
   loop conn vpid
   where
-    loop :: WS.Connection -> ProcessId -> ReaderT LocalNode IO ()
+    loop :: WS.Connection -> ProcessId -> IO' ()
     loop conn vpid = do
       node <- ask
       msg <- lift $ WS.receive conn
       case msg of
         WS.ControlMessage (WS.Close _ _) -> do
-          lift $ unregistViewer node spid vpid
+          unregistViewer spid vpid
           -- [TODO] kill process
           lift $ putStrLn "close complete!!"
         _ -> loop conn vpid
@@ -204,33 +204,41 @@ notifyInt conn n =
 
 
 
-registViewer :: LocalNode -> ProcessId -> ProcessId -> IO ()
-registViewer node spid vpid = runProcess node $ send spid (Regist vpid)
+registViewer :: ProcessId -> ProcessId -> IO' ()
+registViewer spid vpid = do
+  node <- ask
+  lift $ runProcess node $ send spid (Regist vpid)
 
-unregistViewer :: LocalNode -> ProcessId -> ProcessId -> IO ()
-unregistViewer node spid vpid = runProcess node $ send spid (Unregist vpid)
+unregistViewer :: ProcessId -> ProcessId -> IO' ()
+unregistViewer spid vpid = do
+  node <- ask
+  lift $ runProcess node $ send spid (Unregist vpid)
 
-pushString :: LocalNode -> ProcessId -> String -> IO (Maybe String)
-pushString node spid xs = do
-  rsb <- newIORef Nothing
-  runProcess node $ (\rsb -> do 
-                        self <- getSelfPid
-                        send spid (StringData self xs)
-                        sb <- expectTimeout 1000000 -- must have timeout
-                        liftIO $ writeIORef rsb sb
-                    ) rsb
-  sb <- readIORef rsb
-  return sb
+pushString :: ProcessId -> String -> IO' (Maybe String)
+pushString spid xs = do
+  node <- ask
+  lift $ do
+    rsb <- newIORef Nothing
+    runProcess node $ (\rsb -> do 
+                          self <- getSelfPid
+                          send spid (StringData self xs)
+                          sb <- expectTimeout 1000000 -- must have timeout
+                          liftIO $ writeIORef rsb sb
+                      ) rsb
+    sb <- readIORef rsb
+    return sb
 
-pushInt :: LocalNode -> ProcessId -> Int -> IO (Maybe Int)
-pushInt node spid n = do
-  rsb <- newIORef Nothing
-  runProcess node $ (\rsb -> do 
-                        self <- getSelfPid
-                        send spid (IntData self n)
-                        sb <- expectTimeout 1000000 -- must have timeout
-                        liftIO $ writeIORef rsb sb
-                    ) rsb
-  sb <- readIORef rsb
-  return sb
+pushInt :: ProcessId -> Int -> IO' (Maybe Int)
+pushInt spid n = do
+  node <- ask
+  lift $ do
+    rsb <- newIORef Nothing
+    runProcess node $ (\rsb -> do 
+                          self <- getSelfPid
+                          send spid (IntData self n)
+                          sb <- expectTimeout 1000000 -- must have timeout
+                          liftIO $ writeIORef rsb sb
+                      ) rsb
+    sb <- readIORef rsb
+    return sb
 
