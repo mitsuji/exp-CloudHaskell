@@ -128,7 +128,6 @@ viewerApp spid pconn = do
   where
     loop :: WS.Connection -> ProcessId -> IO' ()
     loop conn vpid = do
-      node <- ask
       msg <- lift $ WS.receive conn
       case msg of
         WS.ControlMessage (WS.Close _ _) -> do
