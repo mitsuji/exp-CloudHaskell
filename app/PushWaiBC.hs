@@ -32,6 +32,7 @@ import qualified Network.WebSockets as WS
 import Data.Word8 (_question)
 import Data.List (delete)
 
+import Control.Monad.Reader
 
 
 
@@ -44,50 +45,59 @@ main = do
     Warp.setHost (fromString host) $
     Warp.setPort (read port) $
     Warp.defaultSettings
-    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp node spid) (httpRouterApp node spid)
+    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp' node spid) (httpRouterApp' node spid)
 
 
-httpRouterApp :: LocalNode -> ProcessId -> Wai.Application
-httpRouterApp node spid req respond
-  | (["push"] == path) = pushApp node spid req respond
-  | otherwise          = staticApp req respond -- static html/js/css files
+type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> ReaderT LocalNode IO Wai.ResponseReceived
+
+httpRouterApp' :: LocalNode -> ProcessId -> Wai.Application  
+httpRouterApp' node pid req respond = runReaderT (httpRouterApp pid req respond) node
+
+httpRouterApp :: ProcessId -> Application'
+httpRouterApp spid req respond
+  | (["push"] == path) = pushApp spid req respond
+  | otherwise          = lift $ staticApp req respond -- static html/js/css files
   where
     path = Wai.pathInfo req
 
 
-pushApp :: LocalNode -> ProcessId -> Wai.Application
-pushApp node spid req respond = do
+pushApp :: ProcessId -> Application'
+pushApp spid req respond = do
   case cmd req of
     Just xs -> do
       case readMaybe xs :: Maybe Int of
-        Nothing -> sendString node spid xs req respond
-        Just n -> sendInt node spid n req respond
-    Nothing -> respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noParam]"
+        Nothing -> sendString spid xs req respond
+        Just n -> sendInt spid n req respond
+    Nothing -> lift $ respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noParam]"
   where
     cmd :: Wai.Request -> Maybe String
     cmd req = lookup "cmd" (Wai.queryString req) >>= (\mcmd -> T.unpack . decodeUtf8 <$> mcmd)
 
 
-sendString :: LocalNode -> ProcessId -> String  -> Wai.Application
-sendString node spid xs req respond = do
-  msb <- pushString node spid xs
-  case msb of
-    Just sb -> do
-      let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ xs ++ " -> " ++ sb
-      respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-    Nothing -> do
-      respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+sendString :: ProcessId -> String  -> Application'
+sendString spid xs req respond = do
+  node <- ask
+  lift $ do
+    msb <- pushString node spid xs
+    case msb of
+      Just sb -> do
+        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ xs ++ " -> " ++ sb
+        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
+      Nothing -> do
+        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
 
 
-sendInt :: LocalNode -> ProcessId -> Int -> Wai.Application
-sendInt node spid n req respond = do
-  msb <- pushInt node spid n
-  case msb of
-    Just sb -> do
-      let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ (show n) ++ " -> " ++ (show sb)
-      respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-    Nothing -> do
-      respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+sendInt :: ProcessId -> Int -> Application'
+sendInt spid n req respond = do
+  node <- ask
+  lift $ do
+    msb <- pushInt node spid n
+    case msb of
+      Just sb -> do
+        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ (show n) ++ " -> " ++ (show sb)
+        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
+      Nothing -> do
+        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
 
 
 
@@ -99,30 +109,37 @@ staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
     indices = fromJust $ toPieces ["main.html"] -- default content
 
 
+type WSServerApp' = WS.PendingConnection -> ReaderT LocalNode IO ()
 
-wsRouterApp :: LocalNode -> ProcessId -> WS.ServerApp
-wsRouterApp node spid pconn
-  | ("/viewer" == path) = viewerApp node spid pconn
-  | otherwise = WS.rejectRequest pconn "endpoint not found"
+wsRouterApp' :: LocalNode -> ProcessId -> WS.ServerApp
+wsRouterApp' node pid pconn = runReaderT (wsRouterApp pid pconn) node
+
+wsRouterApp :: ProcessId -> WSServerApp'
+wsRouterApp spid pconn
+  | ("/viewer" == path) = viewerApp spid pconn
+  | otherwise = lift $ WS.rejectRequest pconn "endpoint not found"
   where
     requestPath = WS.requestPath $ WS.pendingRequest pconn
     path = BS.takeWhile (/=_question) requestPath
 
 
-viewerApp :: LocalNode -> ProcessId -> WS.ServerApp
-viewerApp node spid pconn = do
-  conn <- WS.acceptRequest pconn
-  vpid <- forkProcess node $ viewerServer conn
-  registViewer node spid vpid
+viewerApp :: ProcessId -> WSServerApp'
+viewerApp spid pconn = do
+  node <- ask
+  conn <- lift $ WS.acceptRequest pconn
+  vpid <- lift $ forkProcess node $ viewerServer conn
+  lift $ registViewer node spid vpid
   loop conn vpid
   where
+    loop :: WS.Connection -> ProcessId -> ReaderT LocalNode IO ()
     loop conn vpid = do
-      msg <- WS.receive conn
+      node <- ask
+      msg <- lift $ WS.receive conn
       case msg of
         WS.ControlMessage (WS.Close _ _) -> do
-          unregistViewer node spid vpid
+          lift $ unregistViewer node spid vpid
           -- [TODO] kill process
-          putStrLn "close complete!!"
+          lift $ putStrLn "close complete!!"
         _ -> loop conn vpid
 
 
