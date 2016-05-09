@@ -45,21 +45,20 @@ main = do
     Warp.setHost (fromString host) $
     Warp.setPort (read port) $
     Warp.defaultSettings
-    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp' node spid) (httpRouterApp' node spid)
+    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp node spid) (httpRouterApp node spid)
 
 
 type IO' = ReaderT LocalNode IO
-
 type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
+type WSServerApp' = WS.PendingConnection -> IO' ()
 
-httpRouterApp' :: LocalNode -> ProcessId -> Wai.Application  
-httpRouterApp' node pid req respond = runReaderT (httpRouterApp pid req respond) node
 
-httpRouterApp :: ProcessId -> Application'
-httpRouterApp spid req respond
-  | (["push"] == path) = pushApp spid req respond
-  | otherwise          = lift $ staticApp req respond -- static html/js/css files
+httpRouterApp :: LocalNode -> ProcessId -> Wai.Application
+httpRouterApp node spid req respond = runReaderT (f spid req respond) node
   where
+    f spid req respond
+      | (["push"] == path) = pushApp spid req respond
+      | otherwise          = lift $ staticApp req respond -- static html/js/css files
     path = Wai.pathInfo req
 
 
@@ -109,16 +108,12 @@ staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
     indices = fromJust $ toPieces ["main.html"] -- default content
 
 
-type WSServerApp' = WS.PendingConnection -> IO' ()
-
-wsRouterApp' :: LocalNode -> ProcessId -> WS.ServerApp
-wsRouterApp' node pid pconn = runReaderT (wsRouterApp pid pconn) node
-
-wsRouterApp :: ProcessId -> WSServerApp'
-wsRouterApp spid pconn
-  | ("/viewer" == path) = viewerApp spid pconn
-  | otherwise = lift $ WS.rejectRequest pconn "endpoint not found"
+wsRouterApp :: LocalNode -> ProcessId -> WS.ServerApp
+wsRouterApp node spid pconn = runReaderT (f spid pconn) node
   where
+    f spid pconn
+      | ("/viewer" == path) = viewerApp spid pconn
+      | otherwise = lift $ WS.rejectRequest pconn "endpoint not found"
     requestPath = WS.requestPath $ WS.pendingRequest pconn
     path = BS.takeWhile (/=_question) requestPath
 
