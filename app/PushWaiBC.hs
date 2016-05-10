@@ -48,36 +48,43 @@ main = do
     ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp node spid) (httpRouterApp node spid)
 
 
-type IO' = ReaderT LocalNode IO
-type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
+type IO' = ReaderT (LocalNode,ProcessId) IO
+type WaiApplication' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
 type WSServerApp' = WS.PendingConnection -> IO' ()
 
 
+askNode :: IO' LocalNode
+askNode = fst <$> ask
+
+askPid :: IO' ProcessId
+askPid = snd <$> ask
+
+
 httpRouterApp :: LocalNode -> ProcessId -> Wai.Application
-httpRouterApp node spid req respond = runReaderT (f spid req respond) node
+httpRouterApp node spid req respond = runReaderT (f req respond) (node,spid)
   where
-    f spid req respond
-      | (["push"] == path) = pushApp spid req respond
+    f req respond
+      | (["push"] == path) = pushApp req respond
       | otherwise          = lift $ staticApp req respond -- static html/js/css files
     path = Wai.pathInfo req
 
 
-pushApp :: ProcessId -> Application'
-pushApp spid req respond = do
+pushApp :: WaiApplication'
+pushApp req respond = do
   case cmd req of
     Just xs -> do
       case readMaybe xs :: Maybe Int of
-        Nothing -> sendString spid xs req respond
-        Just n -> sendInt spid n req respond
+        Nothing -> sendString xs req respond
+        Just n -> sendInt n req respond
     Nothing -> lift $ respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noParam]"
   where
     cmd :: Wai.Request -> Maybe String
     cmd req = lookup "cmd" (Wai.queryString req) >>= (\mcmd -> T.unpack . decodeUtf8 <$> mcmd)
 
 
-sendString :: ProcessId -> String  -> Application'
-sendString spid xs req respond = do
-  msb <- pushString spid xs
+sendString :: String -> WaiApplication'
+sendString xs req respond = do
+  msb <- pushString xs
   lift $ do
     case msb of
       Just sb -> do
@@ -87,9 +94,9 @@ sendString spid xs req respond = do
         respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
 
 
-sendInt :: ProcessId -> Int -> Application'
-sendInt spid n req respond = do
-  msb <- pushInt spid n
+sendInt :: Int -> WaiApplication'
+sendInt n req respond = do
+  msb <- pushInt n
   lift $ do
     case msb of
       Just sb -> do
@@ -109,21 +116,21 @@ staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
 
 
 wsRouterApp :: LocalNode -> ProcessId -> WS.ServerApp
-wsRouterApp node spid pconn = runReaderT (f spid pconn) node
+wsRouterApp node spid pconn = runReaderT (f pconn) (node,spid)
   where
-    f spid pconn
-      | ("/viewer" == path) = viewerApp spid pconn
+    f pconn
+      | ("/viewer" == path) = viewerApp pconn
       | otherwise = lift $ WS.rejectRequest pconn "endpoint not found"
     requestPath = WS.requestPath $ WS.pendingRequest pconn
     path = BS.takeWhile (/=_question) requestPath
 
 
-viewerApp :: ProcessId -> WSServerApp'
-viewerApp spid pconn = do
-  node <- ask
+viewerApp :: WSServerApp'
+viewerApp pconn = do
+  node <- askNode
   conn <- lift $ WS.acceptRequest pconn
   vpid <- lift $ forkProcess node $ viewerServer conn
-  registViewer spid vpid
+  registViewer vpid
   loop conn vpid
   where
     loop :: WS.Connection -> ProcessId -> IO' ()
@@ -131,7 +138,7 @@ viewerApp spid pconn = do
       msg <- lift $ WS.receive conn
       case msg of
         WS.ControlMessage (WS.Close _ _) -> do
-          unregistViewer spid vpid
+          unregistViewer vpid
           -- [TODO] kill process
           lift $ putStrLn "close complete!!"
         _ -> loop conn vpid
@@ -198,19 +205,22 @@ notifyInt conn n =
 
 
 
-registViewer :: ProcessId -> ProcessId -> IO' ()
-registViewer spid vpid = do
-  node <- ask
+registViewer :: ProcessId -> IO' ()
+registViewer vpid = do
+  node <- askNode
+  spid <- askPid
   lift $ runProcess node $ send spid (Regist vpid)
 
-unregistViewer :: ProcessId -> ProcessId -> IO' ()
-unregistViewer spid vpid = do
-  node <- ask
+unregistViewer :: ProcessId -> IO' ()
+unregistViewer vpid = do
+  node <- askNode
+  spid <- askPid
   lift $ runProcess node $ send spid (Unregist vpid)
 
-pushString :: ProcessId -> String -> IO' (Maybe String)
-pushString spid xs = do
-  node <- ask
+pushString :: String -> IO' (Maybe String)
+pushString xs = do
+  node <- askNode
+  spid <- askPid
   lift $ do
     rsb <- newIORef Nothing
     runProcess node $ (\rsb -> do 
@@ -222,9 +232,10 @@ pushString spid xs = do
     sb <- readIORef rsb
     return sb
 
-pushInt :: ProcessId -> Int -> IO' (Maybe Int)
-pushInt spid n = do
-  node <- ask
+pushInt :: Int -> IO' (Maybe Int)
+pushInt n = do
+  node <- askNode
+  spid <- askPid
   lift $ do
     rsb <- newIORef Nothing
     runProcess node $ (\rsb -> do 
