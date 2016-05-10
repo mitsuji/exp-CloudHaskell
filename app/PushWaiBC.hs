@@ -32,71 +32,80 @@ import qualified Network.WebSockets as WS
 import Data.Word8 (_question)
 import Data.List (delete)
 
-import Control.Monad.Reader
-
+import Control.Monad.Reader(ReaderT,runReaderT,ask,lift)
+import qualified Blaze.ByteString.Builder.Char.Utf8 as BB
+import Data.Monoid((<>))
 
 
 main :: IO ()
 main = do
   node <- createTransport >>= (\t -> newLocalNode t initRemoteTable)
-  spid <- forkProcess node $ pushServer []
+  mpid <- forkMain node
   host:port:_ <- getArgs
   Warp.runSettings (
     Warp.setHost (fromString host) $
     Warp.setPort (read port) $
     Warp.defaultSettings
-    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp node spid) (httpRouterApp node spid)
+    ) $ websocketsOr WS.defaultConnectionOptions (wsRouterApp node mpid) (httpRouterApp node mpid)
 
 
-type IO' = ReaderT LocalNode IO
-type Application' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
+type IO' = ReaderT (LocalNode,ProcessId) IO
+type WaiApplication' = Wai.Request -> (Wai.Response -> IO Wai.ResponseReceived) -> IO' Wai.ResponseReceived
 type WSServerApp' = WS.PendingConnection -> IO' ()
 
 
+askNode :: IO' LocalNode
+askNode = fst <$> ask
+
+askPid :: IO' ProcessId
+askPid = snd <$> ask
+
+
 httpRouterApp :: LocalNode -> ProcessId -> Wai.Application
-httpRouterApp node spid req respond = runReaderT (f spid req respond) node
+httpRouterApp node mpid req respond = runReaderT (f req respond) (node,mpid)
   where
-    f spid req respond
-      | (["push"] == path) = pushApp spid req respond
-      | otherwise          = lift $ staticApp req respond -- static html/js/css files
+    f req respond
+      | (["input"] == path) = inputApp req respond
+      | otherwise           = lift $ staticApp req respond -- static html/js/css files
     path = Wai.pathInfo req
 
 
-pushApp :: ProcessId -> Application'
-pushApp spid req respond = do
+inputApp :: WaiApplication'
+inputApp req respond =
   case cmd req of
-    Just xs -> do
+    Just xs ->
       case readMaybe xs :: Maybe Int of
-        Nothing -> sendString spid xs req respond
-        Just n -> sendInt spid n req respond
-    Nothing -> lift $ respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noParam]"
+        Nothing -> sendString xs req respond
+        Just n -> sendInt n req respond
+    Nothing ->
+      lift $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] "[noParam]"
   where
     cmd :: Wai.Request -> Maybe String
     cmd req = lookup "cmd" (Wai.queryString req) >>= (\mcmd -> T.unpack . decodeUtf8 <$> mcmd)
 
 
-sendString :: ProcessId -> String  -> Application'
-sendString spid xs req respond = do
-  msb <- pushString spid xs
-  lift $ do
-    case msb of
-      Just sb -> do
-        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ xs ++ " -> " ++ sb
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-      Nothing -> do
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+sendString :: String -> WaiApplication'
+sendString xs req respond = do
+  msb <- stringData xs
+  lift $
+    let
+      res = case msb of
+        Just sb -> "result: " <> BB.fromString xs <> " -> " <> BB.fromString sb
+        Nothing -> "[noResponse]"
+    in
+     respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] res
 
 
-sendInt :: ProcessId -> Int -> Application'
-sendInt spid n req respond = do
-  msb <- pushInt spid n
-  lift $ do
-    case msb of
-      Just sb -> do
-        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ (show n) ++ " -> " ++ (show sb)
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-      Nothing -> do
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+sendInt :: Int -> WaiApplication'
+sendInt n req respond = do
+  msb <- intData n
+  lift $
+    let
+      res = case msb of
+        Just sb -> "result: " <> BB.fromString (show n) <> " -> " <> BB.fromString (show sb)
+        Nothing -> "[noResponse]"
+    in
+     respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] res
 
 
 
@@ -109,21 +118,20 @@ staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
 
 
 wsRouterApp :: LocalNode -> ProcessId -> WS.ServerApp
-wsRouterApp node spid pconn = runReaderT (f spid pconn) node
+wsRouterApp node mpid pconn = runReaderT (f pconn) (node,mpid)
   where
-    f spid pconn
-      | ("/viewer" == path) = viewerApp spid pconn
+    f pconn
+      | ("/viewer" == path) = viewerApp pconn
       | otherwise = lift $ WS.rejectRequest pconn "endpoint not found"
     requestPath = WS.requestPath $ WS.pendingRequest pconn
     path = BS.takeWhile (/=_question) requestPath
 
 
-viewerApp :: ProcessId -> WSServerApp'
-viewerApp spid pconn = do
-  node <- ask
+viewerApp :: WSServerApp'
+viewerApp pconn = do
   conn <- lift $ WS.acceptRequest pconn
-  vpid <- lift $ forkProcess node $ viewerServer conn
-  registViewer spid vpid
+  vpid <- forkViewer conn
+  registViewer vpid
   loop conn vpid
   where
     loop :: WS.Connection -> ProcessId -> IO' ()
@@ -131,108 +139,120 @@ viewerApp spid pconn = do
       msg <- lift $ WS.receive conn
       case msg of
         WS.ControlMessage (WS.Close _ _) -> do
-          unregistViewer spid vpid
+          unregistViewer vpid
           -- [TODO] kill process
           lift $ putStrLn "close complete!!"
         _ -> loop conn vpid
 
 
-type State = [ProcessId]
-
-data Push = Regist ProcessId
-          | Unregist ProcessId
-          | StringData ProcessId String
-          | IntData ProcessId Int
-          deriving (Generic,Typeable)
-
-instance Binary Push
-
-
-pushServer :: State -> Process ()    
-pushServer guests = do
-  guests' <- receiveWait [match (processPush guests)]
-  pushServer guests'
-
-
-processPush :: State -> Push -> Process State
-processPush guests (Regist sender) = do
-  return $ sender : guests
-processPush guests (Unregist sender) = do
-  return $ delete sender guests
-processPush guests (StringData sender msg) = do
-  let r = "*" ++ msg ++ "*"
-  send sender r
-  mapM_ (\g-> send g r) guests
-  liftIO $ do
-    putStrLn $ "string: " ++ msg
-  return $ guests
-processPush guests (IntData sender n) = do
-  let r = n * 2 + 1
-  send sender r
-  mapM_ (\g-> send g r) guests
-  liftIO $ do
-    putStrLn $ "int: " ++ show n
-  return $ guests
 
 
 
-viewerServer :: WS.Connection -> Process ()    
-viewerServer conn = do
-  receiveWait [match (notifyString conn), match (notifyInt conn)]
-  viewerServer conn
+forkMain :: LocalNode -> IO ProcessId
+forkMain node = forkProcess node $ mainProcess []
 
-notifyString :: WS.Connection -> String -> Process ()
-notifyString conn xs =
-  let
-    txt = T.pack $ "notify: " ++ xs
-  in
-   liftIO $ WS.sendTextData conn txt
+forkViewer :: WS.Connection -> IO' ProcessId
+forkViewer conn = do
+  node <- askNode
+  lift $ forkProcess node $ viewerProcess conn
+
+registViewer :: ProcessId -> IO' ()
+registViewer vpid = do
+  node <- askNode
+  mpid <- askPid
+  lift $ runProcess node $ send mpid (RegistViewer vpid)
+
+unregistViewer :: ProcessId -> IO' ()
+unregistViewer vpid = do
+  node <- askNode
+  mpid <- askPid
+  lift $ runProcess node $ send mpid (UnregistViewer vpid)
+
+stringData :: String -> IO' (Maybe String)
+stringData xs = do
+  node <- askNode
+  mpid <- askPid
+  lift $ do
+    rsb <- newIORef Nothing
+    runProcess node $ (\rsb -> do 
+                          self <- getSelfPid
+                          send mpid (StringData self xs)
+                          sb <- expectTimeout 1000000 -- must have timeout
+                          liftIO $ writeIORef rsb sb
+                      ) rsb
+    sb <- readIORef rsb
+    return sb
+
+intData :: Int -> IO' (Maybe Int)
+intData n = do
+  node <- askNode
+  mpid <- askPid
+  lift $ do
+    rsb <- newIORef Nothing
+    runProcess node $ (\rsb -> do 
+                          self <- getSelfPid
+                          send mpid (IntData self n)
+                          sb <- expectTimeout 1000000 -- must have timeout
+                          liftIO $ writeIORef rsb sb
+                      ) rsb
+    sb <- readIORef rsb
+    return sb
+
+
+
+
+type MainState = [ProcessId]
+
+data MainMsg = RegistViewer ProcessId
+             | UnregistViewer ProcessId
+             | StringData ProcessId String
+             | IntData ProcessId Int
+             deriving (Generic,Typeable)
+
+instance Binary MainMsg
+
+
+mainProcess :: MainState -> Process ()    
+mainProcess state = do
+  state' <- receiveWait [match (p state)]
+  mainProcess state'
+  where
+    p :: MainState -> MainMsg -> Process MainState
+    p state (RegistViewer sender)   = return $ sender : state
+    p state (UnregistViewer sender) = return $ delete sender state
+    p state (StringData sender msg) = do
+      let r = "*" ++ msg ++ "*"
+      send sender r
+      mapM_ (\g-> send g r) state
+      liftIO $ putStrLn $ "string: " ++ msg
+      return $ state
+    p state (IntData sender n) = do
+      let r = n * 2 + 1
+      send sender r
+      mapM_ (\g-> send g r) state
+      liftIO $ putStrLn $ "int: " ++ show n
+      return $ state
+
+
+viewerProcess :: WS.Connection -> Process ()    
+viewerProcess conn = do
+  receiveWait [match (pString conn), match (pInt conn)]
+  viewerProcess conn
+  where
+    pString :: WS.Connection -> String -> Process ()
+    pString conn xs =
+      let
+        txt = T.pack $ "notify: " ++ xs
+      in
+       liftIO $ WS.sendTextData conn txt
    
-notifyInt :: WS.Connection -> Int -> Process ()
-notifyInt conn n =
-  let
-    txt =T.pack $ "notify: " ++ show n
-  in
-   liftIO $ WS.sendTextData conn txt
+    pInt :: WS.Connection -> Int -> Process ()
+    pInt conn n =
+      let
+        txt =T.pack $ "notify: " ++ show n
+      in
+       liftIO $ WS.sendTextData conn txt
 
 
 
-
-registViewer :: ProcessId -> ProcessId -> IO' ()
-registViewer spid vpid = do
-  node <- ask
-  lift $ runProcess node $ send spid (Regist vpid)
-
-unregistViewer :: ProcessId -> ProcessId -> IO' ()
-unregistViewer spid vpid = do
-  node <- ask
-  lift $ runProcess node $ send spid (Unregist vpid)
-
-pushString :: ProcessId -> String -> IO' (Maybe String)
-pushString spid xs = do
-  node <- ask
-  lift $ do
-    rsb <- newIORef Nothing
-    runProcess node $ (\rsb -> do 
-                          self <- getSelfPid
-                          send spid (StringData self xs)
-                          sb <- expectTimeout 1000000 -- must have timeout
-                          liftIO $ writeIORef rsb sb
-                      ) rsb
-    sb <- readIORef rsb
-    return sb
-
-pushInt :: ProcessId -> Int -> IO' (Maybe Int)
-pushInt spid n = do
-  node <- ask
-  lift $ do
-    rsb <- newIORef Nothing
-    runProcess node $ (\rsb -> do 
-                          self <- getSelfPid
-                          send spid (IntData self n)
-                          sb <- expectTimeout 1000000 -- must have timeout
-                          liftIO $ writeIORef rsb sb
-                      ) rsb
-    sb <- readIORef rsb
-    return sb
 
