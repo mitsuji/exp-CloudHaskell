@@ -32,8 +32,9 @@ import qualified Network.WebSockets as WS
 import Data.Word8 (_question)
 import Data.List (delete)
 
-import Control.Monad.Reader
-
+import Control.Monad.Reader(ReaderT,runReaderT,ask,lift)
+import qualified Blaze.ByteString.Builder.Char.Utf8 as BB
+import Data.Monoid((<>))
 
 
 main :: IO ()
@@ -70,13 +71,14 @@ httpRouterApp node mpid req respond = runReaderT (f req respond) (node,mpid)
 
 
 inputApp :: WaiApplication'
-inputApp req respond = do
+inputApp req respond =
   case cmd req of
-    Just xs -> do
+    Just xs ->
       case readMaybe xs :: Maybe Int of
         Nothing -> sendString xs req respond
         Just n -> sendInt n req respond
-    Nothing -> lift $ respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noParam]"
+    Nothing ->
+      lift $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] "[noParam]"
   where
     cmd :: Wai.Request -> Maybe String
     cmd req = lookup "cmd" (Wai.queryString req) >>= (\mcmd -> T.unpack . decodeUtf8 <$> mcmd)
@@ -85,25 +87,25 @@ inputApp req respond = do
 sendString :: String -> WaiApplication'
 sendString xs req respond = do
   msb <- stringData xs
-  lift $ do
-    case msb of
-      Just sb -> do
-        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ xs ++ " -> " ++ sb
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-      Nothing -> do
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+  lift $
+    let
+      res = case msb of
+        Just sb -> "result: " <> BB.fromString xs <> " -> " <> BB.fromString sb
+        Nothing -> "[noResponse]"
+    in
+     respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] res
 
 
 sendInt :: Int -> WaiApplication'
 sendInt n req respond = do
   msb <- intData n
-  lift $ do
-    case msb of
-      Just sb -> do
-        let pt_lbs = LBS.fromStrict $ encodeUtf8 $ T.pack $ "result: " ++ (show n) ++ " -> " ++ (show sb)
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] pt_lbs
-      Nothing -> do
-        respond $ Wai.responseLBS H.status200 [("Content-Type","text/plain")] "[noResponse]"
+  lift $
+    let
+      res = case msb of
+        Just sb -> "result: " <> BB.fromString (show n) <> " -> " <> BB.fromString (show sb)
+        Nothing -> "[noResponse]"
+    in
+     respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] res
 
 
 
@@ -216,23 +218,19 @@ mainProcess state = do
   mainProcess state'
   where
     p :: MainState -> MainMsg -> Process MainState
-    p state (RegistViewer sender) = do
-      return $ sender : state
-    p state (UnregistViewer sender) = do
-      return $ delete sender state
+    p state (RegistViewer sender)   = return $ sender : state
+    p state (UnregistViewer sender) = return $ delete sender state
     p state (StringData sender msg) = do
       let r = "*" ++ msg ++ "*"
       send sender r
       mapM_ (\g-> send g r) state
-      liftIO $ do
-        putStrLn $ "string: " ++ msg
+      liftIO $ putStrLn $ "string: " ++ msg
       return $ state
     p state (IntData sender n) = do
       let r = n * 2 + 1
       send sender r
       mapM_ (\g-> send g r) state
-      liftIO $ do
-        putStrLn $ "int: " ++ show n
+      liftIO $ putStrLn $ "int: " ++ show n
       return $ state
 
 
