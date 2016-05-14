@@ -1,12 +1,12 @@
 
+import System.IO (hSetEcho,stdin)
+import Text.Read (readMaybe)
 import Network.Transport.InMemory (createTransport)
 import Control.Distributed.Process.Node (LocalNode,newLocalNode,initRemoteTable,forkProcess,runProcess)
 import Control.Distributed.Process (Process,ProcessId,send,receiveWait,match)
 import Control.Monad (forever)
-import Control.Monad.Trans (lift,liftIO)
+import Control.Monad.Trans (liftIO)
 import Control.Monad.Reader (ReaderT,runReaderT,ask)
-import Text.Read (readMaybe)
-import System.IO (hSetEcho,stdin)
 
 
 
@@ -33,12 +33,12 @@ type IO' = ReaderT (LocalNode,ProcessId) IO
 tellString :: String -> IO' ()
 tellString msg = do
   (node,mpid) <- ask
-  lift $ runProcess node $ send mpid msg
+  liftIO $ runProcess node $ send mpid msg
 
 tellInt :: Int -> IO' ()
 tellInt n = do
   (node,mpid) <- ask
-  lift $ runProcess node $ send mpid n
+  liftIO $ runProcess node $ send mpid n
 
 
 

@@ -1,12 +1,12 @@
 
+import System.IO (hSetEcho,stdin)
+import Text.Read (readMaybe)
 import Network.Transport.InMemory (createTransport)
 import Control.Distributed.Process.Node (LocalNode,newLocalNode,initRemoteTable,forkProcess,runProcess)
 import Control.Distributed.Process (Process,ProcessId,send,receiveWait,match,getSelfPid,expectTimeout)
 import Control.Monad (forever)
-import Control.Monad.Trans (lift,liftIO)
+import Control.Monad.Trans (liftIO)
 import Control.Monad.Reader (ReaderT,runReaderT,ask)
-import Text.Read (readMaybe)
-import System.IO (hSetEcho,stdin)
 import Data.IORef(newIORef,writeIORef,readIORef)
 
 
@@ -21,7 +21,7 @@ main = do
   where
     clientLoop :: IO' ()
     clientLoop = do
-      msg<- liftIO getLine
+      msg <- liftIO getLine
       case readMaybe msg :: Maybe Int of
         Nothing -> do
           mmsg' <- askString msg
@@ -42,7 +42,7 @@ type IO' = ReaderT (LocalNode,ProcessId) IO
 askString :: String -> IO' (Maybe String)
 askString msg = do
   (node,mpid) <- ask
-  lift $ do
+  liftIO $ do
     rr <- newIORef Nothing
     runProcess node $ do 
       self <- getSelfPid
@@ -56,7 +56,7 @@ askString msg = do
 askInt :: Int -> IO' (Maybe Int)
 askInt n = do
   (node,mpid) <- ask
-  lift $ do
+  liftIO $ do
     rr <- newIORef Nothing
     runProcess node $ do 
       self <- getSelfPid
@@ -65,6 +65,7 @@ askInt n = do
       liftIO $ writeIORef rr r
     r <- readIORef rr
     return r
+
 
 
 forkMain :: LocalNode -> IO ProcessId
