@@ -1,5 +1,6 @@
 
 import System.Environment (getArgs)
+import System.IO (hSetEcho,stdin)
 import Data.String (fromString)
 import Text.Read (readMaybe)
 import Network.Transport (EndPointAddress(EndPointAddress))
@@ -24,6 +25,7 @@ main = do
   pid <- forkClient node
   let nid = NodeId $ EndPointAddress $ fromString mep
 
+  hSetEcho stdin False
   runReaderT (client pid) (node,nid)
     where
       client :: ProcessId -> IO' ()
@@ -73,7 +75,7 @@ clientProcess :: Process ()
 clientProcess = forever $ receiveWait [match pString, match pInt]
   where
     pString :: String -> Process ()
-    pString xs = liftIO $ putStrLn $ "notify: " ++ xs
+    pString msg = liftIO $ putStrLn $ "notify: " ++ msg
     pInt :: Int -> Process ()
     pInt n = liftIO $ putStrLn $ "notify: " ++ show n
 
