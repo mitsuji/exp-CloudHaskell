@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 
 module ConsoleChatData (
-  MainMsg (RegistClient,UnregistClient,StringData,IntData)
+  MainMsg (RegistClient,UnregistClient,StringData)
   ) where
 
 
@@ -12,10 +12,9 @@ import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
 import Data.Binary (Binary)
 
-data MainMsg = RegistClient ProcessId
+data MainMsg = RegistClient ProcessId String
              | UnregistClient ProcessId
-             | StringData String
-             | IntData Int
+             | StringData ProcessId String
              deriving (Generic,Typeable)
 
 instance Binary MainMsg

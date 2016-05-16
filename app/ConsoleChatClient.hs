@@ -2,7 +2,6 @@
 import System.Environment (getArgs)
 import System.IO (hSetEcho,stdin)
 import Data.String (fromString)
-import Text.Read (readMaybe)
 import Network.Transport (EndPointAddress(EndPointAddress))
 import Network.Transport.TCP (createTransport,defaultTCPParameters)
 import Control.Distributed.Process.Node (LocalNode,newLocalNode,initRemoteTable,forkProcess,runProcess)
@@ -10,7 +9,7 @@ import Control.Distributed.Process (Process,ProcessId,nsendRemote,receiveWait,ma
 import Control.Monad (forever)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Reader (ReaderT,runReaderT,ask)
-import ConsoleChatData (MainMsg(RegistClient,UnregistClient,StringData,IntData))
+import ConsoleChatData (MainMsg(RegistClient,UnregistClient,StringData))
 
 
 
@@ -18,7 +17,7 @@ type IO' = ReaderT (LocalNode,NodeId) IO
 
 main :: IO ()
 main = do
-  host:port:mep:_ <- getArgs
+  host:port:mep:name:_ <- getArgs
   
   Right t <- createTransport host port defaultTCPParameters
   node <- newLocalNode t initRemoteTable
@@ -26,28 +25,25 @@ main = do
   let nid = NodeId $ EndPointAddress $ fromString mep
 
   hSetEcho stdin False
-  runReaderT (client pid) (node,nid)
+  runReaderT (client pid name) (node,nid)
     where
-      client :: ProcessId -> IO' ()
-      client pid = do
-        registClient pid
+      client :: ProcessId -> String -> IO' ()
+      client pid name = do
+        registClient pid name
         loop pid
 
       loop :: ProcessId -> IO' ()
       loop pid = do
         msg <- liftIO getLine
-        case readMaybe msg :: Maybe Int of
-          Nothing | msg == "q" -> do
-            unregistClient pid
-            return ()
-          Nothing -> tellString msg >> loop pid
-          Just n  -> tellInt n >> loop pid
+        case msg of
+          "q" -> unregistClient pid
+          _   -> tellString pid msg >> loop pid
 
 
-registClient :: ProcessId -> IO' ()
-registClient pid = do
+registClient :: ProcessId -> String -> IO' ()
+registClient pid name = do
   (node,mnid) <- ask
-  liftIO $ runProcess node $ nsendRemote mnid "main" (RegistClient pid)
+  liftIO $ runProcess node $ nsendRemote mnid "main" (RegistClient pid name)
   -- [TODO] link or monitor nid
 
 unregistClient :: ProcessId -> IO' ()
@@ -56,26 +52,18 @@ unregistClient pid = do
   liftIO $ runProcess node $ nsendRemote mnid "main" (UnregistClient pid)
   -- [TODO] kill pid
 
-tellString :: String -> IO' ()
-tellString msg = do
+tellString :: ProcessId -> String -> IO' ()
+tellString pid msg = do
   (node,mnid) <- ask
-  liftIO $ runProcess node $ nsendRemote mnid "main" (StringData msg)
-
-tellInt :: Int -> IO' ()
-tellInt n = do
-  (node,mnid) <- ask
-  liftIO $ runProcess node $ nsendRemote mnid "main" (IntData n)
-
+  liftIO $ runProcess node $ nsendRemote mnid "main" (StringData pid msg)
 
 
 forkClient :: LocalNode -> IO ProcessId
 forkClient node = forkProcess node $ clientProcess
 
 clientProcess :: Process ()    
-clientProcess = forever $ receiveWait [match pString, match pInt]
+clientProcess = forever $ receiveWait [match p]
   where
-    pString :: String -> Process ()
-    pString msg = liftIO $ putStrLn $ "notify: " ++ msg
-    pInt :: Int -> Process ()
-    pInt n = liftIO $ putStrLn $ "notify: " ++ show n
+    p :: String -> Process ()
+    p msg = liftIO $ putStrLn $ msg
 
