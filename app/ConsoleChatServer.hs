@@ -4,9 +4,8 @@ import Network.Transport.TCP (createTransport,defaultTCPParameters)
 import Control.Distributed.Process.Node (LocalNode,newLocalNode,initRemoteTable,forkProcess)
 import Control.Distributed.Process (processNodeId,nodeAddress,Process,ProcessId,getSelfPid,register,send,receiveWait,match)
 import Control.Monad.Trans (liftIO)
-import ConsoleChatData (MainMsg(RegistClient,UnregistClient,StringData,IntData))
-import Data.List (delete)
-
+import ConsoleChatData (MainMsg(RegistClient,UnregistClient,StringData))
+import Data.Map.Strict as Map
 
 
 main :: IO ()
@@ -22,11 +21,10 @@ main = do
 
 
 forkMain :: LocalNode -> IO ProcessId
-forkMain node = forkProcess node $ mainProcess []
+forkMain node = forkProcess node $ mainProcess Map.empty
 
 
-
-type MainState = [ProcessId]
+type MainState = Map.Map ProcessId String
 
 mainProcess :: MainState -> Process ()    
 mainProcess state = do
@@ -39,15 +37,14 @@ mainProcess state = do
       state' <- receiveWait [match (p state)]
       loop state'
     p :: MainState -> MainMsg -> Process MainState
-    p state (RegistClient sender)   = return $ sender : state
-    p state (UnregistClient sender) = return $ delete sender state
-    p state (StringData msg) = do
-      liftIO $ putStrLn $ "String: " ++ msg
-      mapM_ (\g-> send g $ "*" ++ msg ++ "*") state
-      return $ state
-    p state (IntData n) = do
-      liftIO $ putStrLn $ "Int: " ++ show n
-      mapM_ (\g-> send g $ n * 2 + 1) state
+    p state (RegistClient sender name)   = return $ Map.insert sender name state
+    p state (UnregistClient sender) = return $ Map.delete sender state
+    p state (StringData sender msg) = do
+      let sname = case Map.lookup sender state of
+            Just name -> name
+            Nothing   -> "[unknown]"
+      liftIO $ putStrLn $ "StringData " ++ sname ++ " " ++ msg
+      mapM_ (\(t,_)-> send t $ sname ++ ": " ++ msg) $ Map.toList state
       return $ state
 
 
