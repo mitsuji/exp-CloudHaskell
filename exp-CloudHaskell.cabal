@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 
 executable exp-CloudHaskell-exe
   hs-source-dirs:      app
-  main-is:             Push.hs
+  main-is:             ConsoleTell.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , distributed-process
