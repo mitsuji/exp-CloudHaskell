@@ -16,10 +16,11 @@ import Data.Text.Encoding (decodeUtf8)
 import Text.Read (readMaybe)
 import Network.Transport.InMemory (createTransport)
 import Control.Distributed.Process.Node (LocalNode,newLocalNode,initRemoteTable,forkProcess,runProcess)
-import Control.Distributed.Process (Process,ProcessId,send,receiveWait,match)
+import Control.Distributed.Process (Process,ProcessId,send,receiveWait,match,getSelfPid,expectTimeout)
 import Control.Monad (forever)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Reader (ReaderT,runReaderT,ask)
+import Data.IORef(newIORef,writeIORef,readIORef)
 
 
 main :: IO ()
@@ -43,49 +44,71 @@ routerApp :: LocalNode -> ProcessId -> Wai.Application
 routerApp node mpid req respond = runReaderT (f req respond) (node,mpid)
   where
     f req respond
-      | (["tell"] == path) = tellApp req respond
+      | (["ask"] == path) = askApp req respond
       | otherwise          = liftIO $ staticApp req respond -- static html/js/css files
     path = Wai.pathInfo req
 
 
-tellApp :: WaiApplication'
-tellApp req respond = do
+askApp :: WaiApplication'
+askApp req respond = do
   xs <- liftIO $ T.unpack . decodeUtf8 <$> Wai.requestBody req
   case readMaybe xs :: Maybe Int of
-    Nothing -> tellStringApp xs req respond
-    Just n  -> tellIntApp n req respond
+    Nothing -> askStringApp xs req respond
+    Just n  -> askIntApp n req respond
 
 
-tellStringApp :: String -> WaiApplication'
-tellStringApp xs req respond = do
-  tellString xs
-  liftIO $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] "OK String"
+askStringApp :: String -> WaiApplication'
+askStringApp xs req respond = do
+  mmsg <- askString xs
+  let r = case mmsg of
+        Just msg ->  fromString msg
+        Nothing  ->  "[NoResponse]"
+  liftIO $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] r
 
-tellIntApp :: Int -> WaiApplication'
-tellIntApp n req respond = do
-  tellInt n
-  liftIO $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] "OK Int"
-
-
+askIntApp :: Int -> WaiApplication'
+askIntApp n req respond = do
+  mn <- askInt n
+  let r = case mn of
+        Just n  -> fromString (show n)
+        Nothing -> "[NoResponse]"
+  liftIO $ respond $ Wai.responseBuilder H.status200 [("Content-Type","text/plain")] r
+      
 staticApp :: Wai.Application
 staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
   where
     settings = Static.defaultWebAppSettings "static"
 --    settings = Static.embeddedSettings $(embedDir "static")
-    indices = fromJust $ toPieces ["WaiTell.htm"] -- default content
+    indices = fromJust $ toPieces ["WaiAsk.htm"] -- default content
 
   
   
 
-tellString :: String -> IO' ()
-tellString msg = do
+askString :: String -> IO' (Maybe String)
+askString msg = do
   (node,mpid) <- ask
-  liftIO $ runProcess node $ send mpid msg
+  liftIO $ do
+    rr <- newIORef Nothing
+    runProcess node $ do 
+      self <- getSelfPid
+      send mpid (self,msg)
+      r <- expectTimeout 1000000 -- must have timeout
+      liftIO $ writeIORef rr r
+    r <- readIORef rr
+    return r
+    
 
-tellInt :: Int -> IO' ()
-tellInt n = do
+askInt :: Int -> IO' (Maybe Int)
+askInt n = do
   (node,mpid) <- ask
-  liftIO $ runProcess node $ send mpid n
+  liftIO $ do
+    rr <- newIORef Nothing
+    runProcess node $ do 
+      self <- getSelfPid
+      send mpid (self,n)
+      r <- expectTimeout 1000000 -- must have timeout
+      liftIO $ writeIORef rr r
+    r <- readIORef rr
+    return r
 
 
 
@@ -95,8 +118,7 @@ forkMain node = forkProcess node mainProcess
 mainProcess :: Process ()    
 mainProcess = forever $ receiveWait [match pString,match pInt]
   where
-    pString :: String -> Process ()
-    pString msg = liftIO $ putStrLn $ "String: " ++ msg
-    pInt :: Int -> Process ()
-    pInt n = liftIO $ putStrLn $ "Int: " ++ show n
-
+    pString :: (ProcessId,String) -> Process ()
+    pString (sender,msg) = send sender $ "*" ++ msg ++ "*"
+    pInt :: (ProcessId,Int) -> Process ()
+    pInt (sender,n) = send sender $ n * 2 + 1
