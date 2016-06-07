@@ -76,8 +76,7 @@ askIntApp n req respond = do
 staticApp :: Wai.Application
 staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
   where
-    settings = Static.defaultWebAppSettings "static"
---    settings = Static.embeddedSettings $(embedDir "static")
+    settings = Static.embeddedSettings $(embedDir "static")
     indices = fromJust $ toPieces ["WaiAsk.htm"] -- default content
 
   

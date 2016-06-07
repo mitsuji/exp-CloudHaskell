@@ -65,8 +65,7 @@ type WSServerApp' = WS.PendingConnection -> IO' ()
 staticApp :: Wai.Application
 staticApp = Static.staticApp $ settings { Static.ssIndices = indices }
   where
-    settings = Static.defaultWebAppSettings "static"
---    settings = Static.embeddedSettings $(embedDir "static")
+    settings = Static.embeddedSettings $(embedDir "static")
     indices = fromJust $ toPieces ["WaiChat.htm"] -- default content
 
 

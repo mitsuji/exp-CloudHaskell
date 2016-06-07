@@ -13,15 +13,99 @@ build-type:          Simple
 -- extra-source-files:
 cabal-version:       >=1.10
 
-executable exp-CloudHaskell-exe
+
+executable exp-CloudHaskell-ConsoleTell-exe
   hs-source-dirs:      app
   main-is:             ConsoleTell.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , distributed-process
                      , network-transport-inmemory
+                     , mtl
+  default-language:    Haskell2010
+
+
+executable exp-CloudHaskell-ConsoleAsk-exe
+  hs-source-dirs:      app
+  main-is:             ConsoleAsk.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
+                     , network-transport-inmemory
+                     , mtl
+  default-language:    Haskell2010
+
+
+executable exp-CloudHaskell-ConsoleChatClient-exe
+  hs-source-dirs:      app
+  main-is:             ConsoleChatClient.hs
+  other-modules:       ConsoleChatData
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
                      , network-transport-tcp
+                     , network-transport
                      , binary
+                     , mtl
+  default-language:    Haskell2010
+
+executable exp-CloudHaskell-ConsoleChatServer-exe
+  hs-source-dirs:      app
+  main-is:             ConsoleChatServer.hs
+  other-modules:       ConsoleChatData
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
+                     , network-transport-tcp
+                     , network-transport
+                     , binary
+                     , mtl
+                     , containers
+  default-language:    Haskell2010
+
+
+
+executable exp-CloudHaskell-WaiTell-exe
+  hs-source-dirs:      app
+  main-is:             WaiTell.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
+                     , network-transport-inmemory
+                     , text
+                     , file-embed
+                     , http-types
+                     , warp
+                     , wai
+                     , wai-app-static
+                     , mtl
+  default-language:    Haskell2010
+
+
+executable exp-CloudHaskell-WaiAsk-exe
+  hs-source-dirs:      app
+  main-is:             WaiAsk.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
+                     , network-transport-inmemory
+                     , text
+                     , file-embed
+                     , http-types
+                     , warp
+                     , wai
+                     , wai-app-static
+                     , mtl
+  default-language:    Haskell2010
+
+
+executable exp-CloudHaskell-WaiChat-exe
+  hs-source-dirs:      app
+  main-is:             WaiChat.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , distributed-process
+                     , network-transport-inmemory
                      , text
                      , bytestring
                      , file-embed
@@ -31,12 +115,12 @@ executable exp-CloudHaskell-exe
                      , wai-app-static
                      , wai-websockets
                      , websockets
-                     , word8
                      , mtl
-                     , blaze-builder
-                     , network-transport
                      , containers
+                     , word8
+                     , binary
   default-language:    Haskell2010
+
 
 source-repository head
   type:     git
